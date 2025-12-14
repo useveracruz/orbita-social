@@ -1,0 +1,1114 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  LayoutDashboard, 
+  Glasses, 
+  Users, 
+  ShoppingCart, 
+  BarChart3, 
+  Plus, 
+  Search, 
+  Save, 
+  Trash2, 
+  FileSpreadsheet, 
+  CheckCircle2, 
+  XCircle,
+  Image as ImageIcon,
+  DollarSign,
+  Package,
+  Gift,
+  Filter,
+  Edit,
+  Upload,
+  Calendar,
+  Wallet,
+  History,
+  X,
+  ArrowRightLeft,
+  Settings,
+  Download,
+  Link as LinkIcon,
+  Truck,
+  Box,
+  MapPin
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  increment
+} from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
+
+// --- Utils ---
+const formatCurrency = (value) => {
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+};
+
+const formatDate = (dateString) => {
+  if (!dateString) return '';
+  const date = new Date(dateString + 'T00:00:00'); 
+  return new Intl.DateTimeFormat('pt-BR').format(date);
+};
+
+// Image Compression
+const resizeImage = (file) => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        const MAX_HEIGHT = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+        } else {
+          if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+// --- Components ---
+
+const Card = ({ title, value, subtitle, icon: Icon, dark = false }) => (
+  <div className={`p-6 rounded-xl shadow-sm border flex items-start justify-between relative overflow-hidden transition-all hover:shadow-md ${dark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-white border-zinc-200 text-zinc-800'}`}>
+    <div className="z-10 flex-1 pr-4">
+      <p className={`text-sm font-medium mb-2 ${dark ? 'text-zinc-400' : 'text-zinc-500'}`}>{title}</p>
+      <h3 className="text-2xl font-bold break-words">{value}</h3>
+      {subtitle && <p className={`text-xs mt-1 ${dark ? 'text-zinc-500' : 'text-zinc-400'}`}>{subtitle}</p>}
+    </div>
+    <div className={`p-3 rounded-lg flex-shrink-0 ${dark ? 'bg-zinc-800 text-zinc-300' : 'bg-zinc-100 text-zinc-600'}`}>
+      <Icon size={24} />
+    </div>
+  </div>
+);
+
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl animate-in fade-in zoom-in duration-200 my-8">
+        <div className="flex justify-between items-center p-6 border-b border-zinc-100 bg-white rounded-t-xl sticky top-0 z-10">
+          <h2 className="text-xl font-bold text-zinc-800">{title}</h2>
+          <button onClick={onClose} className="text-zinc-400 hover:text-red-500 transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+        <div className="p-6 max-h-[80vh] overflow-y-auto">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- Main App Component ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [dashboardSection, setDashboardSection] = useState('Geral');
+  const [loading, setLoading] = useState(true);
+  
+  // Data States
+  const [products, setProducts] = useState([]);
+  const [partners, setPartners] = useState([]);
+  const [sales, setSales] = useState([]);
+
+  // Modals
+  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null); 
+  const [isWholesaleModalOpen, setIsWholesaleModalOpen] = useState(false);
+  const [isPartnerModalOpen, setIsPartnerModalOpen] = useState(false);
+  const [isSaleModalOpen, setIsSaleModalOpen] = useState(false);
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  
+  const [selectedProductHistory, setSelectedProductHistory] = useState(null);
+
+  // Filters
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  const [inventoryFilter, setInventoryFilter] = useState({
+    siteStatus: 'all',
+    location: 'all',
+    sortBy: 'name',
+  });
+
+  const [salesFilter, setSalesFilter] = useState({
+    type: 'all',
+    partnerSearch: ''
+  });
+
+  // --- FORMS & STATE ---
+
+  const [productSearchTerm, setProductSearchTerm] = useState('');
+  const [showProductDropdown, setShowProductDropdown] = useState(false);
+
+  // Enhanced Product Form (Variations)
+  const [productGroupForm, setProductGroupForm] = useState({
+    name: '',
+    modelType: 'Quadrado', 
+    variations: [{ id: 1, colorCode: '', colorName: '', imageUrl: '', stock: 0 }],
+    costBase: 0, costCase: 0, costLaser: 0, costFreight: 0, costOther: 0,
+    sellPrice: 0,
+    initialLocation: 'internal',
+    onWebsite: false
+  });
+
+  // Wholesale / Dropshipping Batch Form
+  const [wholesaleForm, setWholesaleForm] = useState({
+    mode: 'dropshipping', // 'dropshipping' | 'stock'
+    description: '',
+    date: new Date().toISOString().split('T')[0],
+    partnerId: '',
+    // Costs for Dropshipping (Manual)
+    totalCostProduct: 0,
+    totalCostCase: 0,
+    totalCostLaser: 0,
+    totalCostFreight: 0,
+    totalCostOther: 0,
+    // Revenue
+    totalSaleValue: 0,
+    quantity: 1,
+    // For Stock Mode
+    batchItems: [] // { productId, sku, name, sourceId, sourceName, quantity, unitCost }
+  });
+
+  // State for adding items to wholesale batch
+  const [batchItemForm, setBatchItemForm] = useState({
+    productId: '',
+    sourceId: 'internal', // 'internal' or partnerId
+    quantity: 1
+  });
+
+  const [partnerForm, setPartnerForm] = useState({
+    name: '', type: 'Consignado', commissionRate: 20, contact: ''
+  });
+
+  const [saleForm, setSaleForm] = useState({
+    partnerId: '', productId: '', quantity: 1, date: new Date().toISOString().split('T')[0],
+    unitPriceOverride: '', discount: 0, isGift: false
+  });
+
+  const [transferForm, setTransferForm] = useState({
+    productId: '', from: 'internal', toPartnerId: '', quantity: 1, date: new Date().toISOString().split('T')[0]
+  });
+
+  // --- Auth & Data ---
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const productsQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'products'), orderBy('createdAt', 'desc'));
+    const partnersQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'partners'), orderBy('name'));
+    const salesQuery = query(collection(db, 'artifacts', appId, 'users', user.uid, 'sales'), orderBy('date', 'desc'));
+
+    const unsubProducts = onSnapshot(productsQuery, (snap) => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubPartners = onSnapshot(partnersQuery, (snap) => setPartners(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+    const unsubSales = onSnapshot(salesQuery, (snap) => {
+      setSales(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+
+    return () => { unsubProducts(); unsubPartners(); unsubSales(); };
+  }, [user]);
+
+  // --- Helpers ---
+  const getProductTotalStock = (p) => {
+    const internal = Number(p.stockInternal) || 0;
+    const consigned = Object.values(p.stockConsigned || {}).reduce((a, b) => a + Number(b), 0);
+    return internal + consigned;
+  };
+
+  // --- Handlers ---
+
+  const handleVariationImageUpload = (e, index) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const newVars = [...productGroupForm.variations];
+        newVars[index].imageUrl = reader.result;
+        setProductGroupForm({ ...productGroupForm, variations: newVars });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const addVariation = () => {
+    setProductGroupForm({
+      ...productGroupForm,
+      variations: [...productGroupForm.variations, { id: Date.now(), colorCode: '', colorName: '', imageUrl: '', stock: 0 }]
+    });
+  };
+
+  const removeVariation = (index) => {
+    const newVars = productGroupForm.variations.filter((_, i) => i !== index);
+    setProductGroupForm({ ...productGroupForm, variations: newVars });
+  };
+
+  const handleDeleteProduct = async (id) => {
+    if(!window.confirm("Tem certeza que deseja excluir este produto?")) return;
+    try { 
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', id)); 
+    } catch (err) { console.error(err); }
+  };
+
+  // Logic to Open Modal for Editing Single Product
+  const openEditProductModal = (product) => {
+    setEditingProduct(product);
+    // Map single product data to the form structure, creating a single "variation"
+    setProductGroupForm({
+      name: product.name || '',
+      modelType: product.modelType || 'Quadrado',
+      costBase: product.costBase || 0,
+      costCase: product.costCase || 0,
+      costLaser: product.costLaser || 0,
+      costFreight: product.costFreight || 0,
+      costOther: product.costOther || 0,
+      sellPrice: product.sellPrice || 0,
+      initialLocation: 'internal',
+      onWebsite: product.onWebsite || false,
+      variations: [{ 
+        id: 1, 
+        colorCode: product.colorCode || '', 
+        colorName: product.colorName || '', 
+        imageUrl: product.imageUrl || '', 
+        stock: product.stockInternal || 0 // Fix: Ensure default 0 to prevent uncontrolled input warning
+      }]
+    });
+    setIsProductModalOpen(true);
+  };
+
+  const handleSaveProductGroup = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    const totalCost = Number(productGroupForm.costBase) + Number(productGroupForm.costCase) + Number(productGroupForm.costLaser) + Number(productGroupForm.costFreight) + Number(productGroupForm.costOther);
+    
+    try {
+      if (editingProduct) {
+        // UPDATE MODE (Single Product)
+        const v = productGroupForm.variations[0];
+        const productData = {
+          name: productGroupForm.name,
+          modelType: productGroupForm.modelType,
+          baseSku: productGroupForm.name.toUpperCase().substring(0, 3), 
+          colorCode: v.colorCode.toUpperCase(),
+          colorName: v.colorName,
+          sku: `${productGroupForm.name.toUpperCase().replace(/\s/g, '')}-${v.colorCode.toUpperCase()}`,
+          imageUrl: v.imageUrl,
+          costBase: productGroupForm.costBase, costCase: productGroupForm.costCase, 
+          costLaser: productGroupForm.costLaser, costFreight: productGroupForm.costFreight, 
+          costOther: productGroupForm.costOther,
+          totalCost,
+          sellPrice: productGroupForm.sellPrice,
+          onWebsite: productGroupForm.onWebsite,
+          updatedAt: serverTimestamp()
+        };
+        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', editingProduct.id), productData);
+
+      } else {
+        // CREATE MODE (Loop Variations)
+        for (const v of productGroupForm.variations) {
+          let stockInternal = 0;
+          let stockConsigned = {};
+          
+          if (productGroupForm.initialLocation === 'internal') {
+            stockInternal = Number(v.stock);
+          } else {
+            stockConsigned[productGroupForm.initialLocation] = Number(v.stock);
+          }
+
+          const productData = {
+            name: productGroupForm.name,
+            modelType: productGroupForm.modelType,
+            baseSku: productGroupForm.name.toUpperCase().substring(0, 3) + Math.floor(Math.random() * 100), 
+            colorCode: v.colorCode.toUpperCase(),
+            colorName: v.colorName,
+            sku: `${productGroupForm.name.toUpperCase().replace(/\s/g, '')}-${v.colorCode.toUpperCase()}`,
+            imageUrl: v.imageUrl,
+            costBase: productGroupForm.costBase, costCase: productGroupForm.costCase, 
+            costLaser: productGroupForm.costLaser, costFreight: productGroupForm.costFreight, 
+            costOther: productGroupForm.costOther,
+            totalCost,
+            sellPrice: productGroupForm.sellPrice,
+            onWebsite: productGroupForm.onWebsite,
+            stockInternal,
+            stockConsigned,
+            createdAt: serverTimestamp()
+          };
+
+          await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'products'), productData);
+        }
+      }
+      setIsProductModalOpen(false);
+      // Reset
+      setProductGroupForm({ name: '', modelType: 'Quadrado', variations: [{ id: 1, colorCode: '', colorName: '', imageUrl: '', stock: 0 }], costBase: 0, costCase: 0, costLaser: 0, costFreight: 0, costOther: 0, sellPrice: 0, initialLocation: 'internal', onWebsite: false });
+      setEditingProduct(null);
+    } catch (error) { console.error("Error saving products:", error); }
+  };
+
+  // --- Wholesale Batch Item Management ---
+
+  const handleAddBatchItem = () => {
+    if (!batchItemForm.productId) return;
+    const product = products.find(p => p.id === batchItemForm.productId);
+    if (!product) return;
+
+    // Validate stock availability
+    let available = 0;
+    let sourceName = '';
+    if (batchItemForm.sourceId === 'internal') {
+      available = product.stockInternal;
+      sourceName = 'Estoque Interno';
+    } else {
+      available = product.stockConsigned?.[batchItemForm.sourceId] || 0;
+      const partner = partners.find(p => p.id === batchItemForm.sourceId);
+      sourceName = partner ? partner.name : 'Parceiro Desconhecido';
+    }
+
+    if (available < Number(batchItemForm.quantity)) {
+      alert(`Quantidade indisponível em ${sourceName}. Disponível: ${available}`);
+      return;
+    }
+
+    // Add to batch list
+    setWholesaleForm(prev => ({
+      ...prev,
+      batchItems: [
+        ...prev.batchItems,
+        {
+          id: Date.now(),
+          productId: product.id,
+          sku: product.sku,
+          name: product.name,
+          sourceId: batchItemForm.sourceId,
+          sourceName: sourceName,
+          quantity: Number(batchItemForm.quantity),
+          unitCost: product.totalCost // Capture current cost
+        }
+      ]
+    }));
+
+    // Reset Item Form
+    setBatchItemForm({ productId: '', sourceId: 'internal', quantity: 1 });
+    setProductSearchTerm('');
+  };
+
+  const handleRemoveBatchItem = (itemId) => {
+    setWholesaleForm(prev => ({
+      ...prev,
+      batchItems: prev.batchItems.filter(item => item.id !== itemId)
+    }));
+  };
+
+  const handleSaveWholesaleBatch = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    const partner = partners.find(p => p.id === wholesaleForm.partnerId);
+    
+    let batchTotalCost = 0;
+    let totalQuantity = 0;
+
+    if (wholesaleForm.mode === 'dropshipping') {
+      batchTotalCost = Number(wholesaleForm.totalCostProduct) + 
+                       Number(wholesaleForm.totalCostCase) + 
+                       Number(wholesaleForm.totalCostLaser) + 
+                       Number(wholesaleForm.totalCostFreight) + 
+                       Number(wholesaleForm.totalCostOther);
+      totalQuantity = Number(wholesaleForm.quantity);
+    } else {
+      // Stock Mode: Calculate from items
+      if (wholesaleForm.batchItems.length === 0) {
+        alert("Adicione pelo menos um item ao lote.");
+        return;
+      }
+      batchTotalCost = wholesaleForm.batchItems.reduce((acc, item) => acc + (item.unitCost * item.quantity), 0);
+      totalQuantity = wholesaleForm.batchItems.reduce((acc, item) => acc + item.quantity, 0);
+    }
+    
+    const revenue = Number(wholesaleForm.totalSaleValue);
+    const profit = revenue - batchTotalCost;
+
+    const saleData = {
+      isWholesaleBatch: true,
+      mode: wholesaleForm.mode,
+      description: wholesaleForm.description,
+      date: wholesaleForm.date,
+      partnerId: wholesaleForm.partnerId,
+      partnerName: partner ? partner.name : 'Atacado Avulso',
+      partnerType: 'Atacado',
+      totalValue: revenue,
+      brandProfit: profit,
+      totalCost: batchTotalCost,
+      quantity: totalQuantity,
+      batchItems: wholesaleForm.batchItems, // Save the detailed list
+      productName: 'LOTE ATACADO',
+      productSku: 'LOTE',
+      createdAt: serverTimestamp()
+    };
+
+    try {
+      // 1. Save the Sale Record
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'sales'), saleData);
+      
+      // 2. If Stock Mode, Deduct Inventory
+      if (wholesaleForm.mode === 'stock') {
+        for (const item of wholesaleForm.batchItems) {
+           const prodRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', item.productId);
+           if (item.sourceId === 'internal') {
+              await updateDoc(prodRef, { stockInternal: increment(-item.quantity) });
+           } else {
+              await updateDoc(prodRef, { [`stockConsigned.${item.sourceId}`]: increment(-item.quantity) });
+           }
+        }
+      }
+      
+      setIsWholesaleModalOpen(false);
+      setWholesaleForm({ mode: 'dropshipping', description: '', date: new Date().toISOString().split('T')[0], partnerId: '', totalCostProduct: 0, totalCostCase: 0, totalCostLaser: 0, totalCostFreight: 0, totalCostOther: 0, totalSaleValue: 0, quantity: 1, batchItems: [] });
+    } catch (err) { console.error(err); }
+  };
+
+  // Standard Sales & Transfer Handlers
+  const handleSaveSale = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    const product = products.find(p => p.id === saleForm.productId);
+    const partner = partners.find(p => p.id === saleForm.partnerId);
+    if (!product || !partner) return;
+
+    const isConsignedSale = partner.type === 'Consignado';
+    if (isConsignedSale) {
+      if ((product.stockConsigned?.[partner.id] || 0) < saleForm.quantity) { alert("Estoque insuficiente no parceiro."); return; }
+    } else {
+      if (product.stockInternal < saleForm.quantity) { alert("Estoque interno insuficiente."); return; }
+    }
+
+    let unitPrice = saleForm.unitPriceOverride ? Number(saleForm.unitPriceOverride) : Number(product.sellPrice);
+    let totalValue = unitPrice * saleForm.quantity;
+    if (saleForm.discount > 0) totalValue -= Number(saleForm.discount);
+
+    let partnerShare = 0, brandShare = totalValue, brandProfit = 0;
+    if (saleForm.isGift) {
+      totalValue = 0; brandShare = 0; partnerShare = 0; brandProfit = - (product.totalCost * saleForm.quantity);
+    } else {
+      partnerShare = (totalValue * partner.commissionRate) / 100;
+      brandShare = totalValue - partnerShare;
+      brandProfit = brandShare - (product.totalCost * saleForm.quantity);
+    }
+
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'sales'), {
+        ...saleForm, productName: product.name, productSku: product.sku, partnerName: partner.name, partnerType: partner.type,
+        totalValue, unitPriceSold: unitPrice, discountGiven: Number(saleForm.discount), isGift: saleForm.isGift,
+        partnerShare, brandShare, brandProfit, costAtTimeOfSale: product.totalCost, createdAt: serverTimestamp()
+      });
+      if (isConsignedSale) {
+        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', product.id), { [`stockConsigned.${partner.id}`]: increment(-Number(saleForm.quantity)) });
+      } else {
+        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', product.id), { stockInternal: increment(-Number(saleForm.quantity)) });
+      }
+      setIsSaleModalOpen(false);
+    } catch (error) { console.error(error); }
+  };
+
+  const handleTransfer = async (e) => {
+    e.preventDefault();
+    if (!user || !transferForm.productId) return;
+    const product = products.find(p => p.id === transferForm.productId);
+    const qty = Number(transferForm.quantity);
+    if (product.stockInternal < qty) { alert("Estoque interno insuficiente."); return; }
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', product.id), {
+        stockInternal: increment(-qty),
+        [`stockConsigned.${transferForm.toPartnerId}`]: increment(qty),
+        updatedAt: serverTimestamp()
+      });
+      setIsTransferModalOpen(false);
+    } catch (err) { console.error(err); }
+  };
+
+  // --- Derived State ---
+  const sortedAndFilteredProducts = useMemo(() => {
+    let result = products.filter(p => p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase()));
+    if (inventoryFilter.siteStatus === 'on') result = result.filter(p => p.onWebsite);
+    else if (inventoryFilter.siteStatus === 'off') result = result.filter(p => !p.onWebsite);
+    
+    if (inventoryFilter.location !== 'all') {
+      if (inventoryFilter.location === 'internal') result = result.filter(p => p.stockInternal > 0);
+      else if (inventoryFilter.location === 'consigned') result = result.filter(p => Object.values(p.stockConsigned || {}).some(qty => qty > 0));
+      else result = result.filter(p => (p.stockConsigned?.[inventoryFilter.location] || 0) > 0);
+    }
+    result.sort((a, b) => a.name.localeCompare(b.name));
+    return result;
+  }, [products, searchTerm, inventoryFilter]);
+
+  const dashboardStats = useMemo(() => {
+    const sectionSales = dashboardSection === 'Geral' ? sales : sales.filter(s => s.partnerType === dashboardSection);
+    const filteredByDate = sectionSales.filter(sale => {
+      const saleDate = new Date(sale.date + 'T00:00:00');
+      const start = dateRange.start ? new Date(dateRange.start + 'T00:00:00') : null;
+      const end = dateRange.end ? new Date(dateRange.end + 'T00:00:00') : null;
+      return (!start || saleDate >= start) && (!end || saleDate <= end);
+    });
+
+    const financialSales = filteredByDate.filter(s => !s.isGift && s.type !== 'Transfer');
+    const marketingSales = filteredByDate.filter(s => s.isGift);
+    
+    return {
+      revenue: financialSales.reduce((acc, curr) => acc + curr.totalValue, 0),
+      profit: financialSales.reduce((acc, curr) => acc + (curr.brandProfit || 0), 0),
+      qtySold: financialSales.reduce((acc, curr) => acc + Number(curr.quantity), 0),
+      marketingCost: marketingSales.reduce((acc, curr) => acc + Math.abs(curr.brandProfit || 0), 0)
+    };
+  }, [sales, dashboardSection, dateRange]);
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-zinc-900 text-zinc-500">Iniciando v7.0...</div>;
+
+  return (
+    <div className="flex h-screen bg-zinc-50 font-sans text-zinc-900 selection:bg-zinc-800 selection:text-white">
+      {/* Sidebar */}
+      <aside className="w-64 bg-black text-zinc-400 flex flex-col flex-shrink-0 border-r border-zinc-800">
+        <div className="p-6 border-b border-zinc-800">
+          <div className="flex items-center gap-2 text-white mb-1">
+             <div className="bg-white text-black p-1 rounded font-bold text-xs">OM</div>
+             <h1 className="text-lg font-bold tracking-widest uppercase">Óculos Manager</h1>
+          </div>
+          <p className="text-[10px] text-zinc-600 uppercase tracking-widest">Controle Premium v7.0</p>
+        </div>
+        
+        <nav className="flex-1 py-6 space-y-1">
+          {[
+            { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+            { id: 'inventory', icon: Glasses, label: 'Produtos' },
+            { id: 'wholesale', icon: Truck, label: 'Atacado & Lotes' },
+            { id: 'partners', icon: Users, label: 'Parceiros' },
+            { id: 'sales', icon: ShoppingCart, label: 'Vendas' },
+            { id: 'config', icon: Settings, label: 'Configurações' }
+          ].map(item => (
+            <button 
+              key={item.id}
+              onClick={() => setActiveTab(item.id)} 
+              className={`w-full flex items-center gap-3 px-6 py-3 transition-all duration-300 border-l-2 ${activeTab === item.id ? 'bg-zinc-900 text-white border-white' : 'hover:bg-zinc-900 hover:text-white border-transparent'}`}
+            >
+              <item.icon size={18} /> {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto">
+        <header className="bg-white border-b border-zinc-200 px-8 py-5 flex justify-between items-center sticky top-0 z-20 shadow-sm">
+          <h2 className="text-2xl font-bold text-zinc-900 capitalize tracking-tight">
+             {activeTab === 'wholesale' ? 'Atacado & Dropshipping' : activeTab === 'inventory' ? 'Produtos & Variações' : activeTab}
+          </h2>
+          <div className="flex items-center gap-4">
+             {activeTab === 'inventory' && (
+                <button onClick={() => setIsTransferModalOpen(true)} className="flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-800">
+                   <ArrowRightLeft size={18} /> Transferir / Consignar
+                </button>
+             )}
+             <div className="flex items-center gap-2 px-3 py-1 bg-zinc-100 rounded-full border border-zinc-200">
+               <div className={`w-2 h-2 rounded-full ${user ? 'bg-green-500' : 'bg-red-500'}`}></div>
+               <span className="text-xs font-medium text-zinc-600 uppercase">{user ? 'Online' : 'Offline'}</span>
+             </div>
+          </div>
+        </header>
+
+        <div className="p-8">
+          {/* Dashboard View */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+               <div className="flex items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-zinc-200">
+                   <div className="flex items-center gap-2 text-sm text-zinc-500 font-bold uppercase"><Calendar size={16}/> Período:</div>
+                   <input type="date" value={dateRange.start} onChange={e => setDateRange({...dateRange, start: e.target.value})} className="border rounded px-2 py-1 text-sm text-zinc-600" />
+                   <span className="text-zinc-300">-</span>
+                   <input type="date" value={dateRange.end} onChange={e => setDateRange({...dateRange, end: e.target.value})} className="border rounded px-2 py-1 text-sm text-zinc-600" />
+               </div>
+
+               <div className="flex gap-1 overflow-x-auto p-1 bg-zinc-100/50 rounded-xl w-fit">
+                  {['Geral', 'Consignado', 'Atacado', 'Franquia', 'Influenciador'].map(sec => (
+                    <button key={sec} onClick={() => setDashboardSection(sec)} className={`px-6 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${dashboardSection === sec ? 'bg-zinc-900 text-white shadow-md' : 'text-zinc-500 hover:bg-zinc-200'}`}>
+                      {sec}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <Card title="Faturamento" value={formatCurrency(dashboardStats.revenue)} subtitle="Inclui Lotes/Atacado" icon={DollarSign} dark={true} />
+                  <Card title="Lucro Líquido" value={formatCurrency(dashboardStats.profit)} subtitle="Margem Real" icon={Wallet} />
+                  <Card title="Volume de Vendas" value={dashboardStats.qtySold} icon={Glasses} />
+                  <Card title="Custo Mkt" value={formatCurrency(dashboardStats.marketingCost)} icon={Gift} />
+                </div>
+            </div>
+          )}
+
+          {/* Wholesale / Batches View */}
+          {activeTab === 'wholesale' && (
+             <div className="animate-in fade-in duration-500">
+               <div className="flex justify-between items-center mb-6">
+                 <div>
+                   <h3 className="font-bold text-lg text-zinc-800">Lotes & Dropshipping</h3>
+                   <p className="text-sm text-zinc-500">Gerencie vendas em massa e operações diretas de fornecedor.</p>
+                 </div>
+                 <button onClick={() => setIsWholesaleModalOpen(true)} className="bg-zinc-900 hover:bg-black text-white px-5 py-3 rounded-lg flex items-center gap-2 shadow-lg text-sm font-bold">
+                    <Package size={18} /> Registrar Novo Lote
+                 </button>
+               </div>
+
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {sales.filter(s => s.isWholesaleBatch).map(batch => (
+                     <div key={batch.id} className="bg-white p-6 rounded-xl border border-zinc-200 shadow-sm relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                           <Truck size={100} />
+                        </div>
+                        <div className="flex justify-between items-start mb-4">
+                           <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="font-bold text-lg text-zinc-900">{batch.description || 'Lote Sem Nome'}</h4>
+                                <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-[10px] uppercase font-bold">{batch.mode === 'dropshipping' ? 'Drop' : 'Estoque Int.'}</span>
+                              </div>
+                              <p className="text-xs text-zinc-500">{formatDate(batch.date)} • {batch.partnerName}</p>
+                           </div>
+                           <div className="text-right">
+                              <p className="text-2xl font-bold text-green-600">{formatCurrency(batch.totalValue)}</p>
+                              <p className="text-xs text-zinc-400 uppercase">Receita Total</p>
+                           </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-4 border-t border-zinc-100 pt-4">
+                           <div>
+                              <p className="text-[10px] text-zinc-400 uppercase font-bold">Qtd Peças</p>
+                              <p className="font-mono text-lg font-medium">{batch.quantity}</p>
+                           </div>
+                           <div>
+                              <p className="text-[10px] text-zinc-400 uppercase font-bold">Custo Total</p>
+                              <p className="font-mono text-lg text-red-400 font-medium">{formatCurrency(batch.totalCost)}</p>
+                           </div>
+                           <div>
+                              <p className="text-[10px] text-zinc-400 uppercase font-bold">Lucro Líquido</p>
+                              <p className="font-mono text-lg text-zinc-800 font-bold">{formatCurrency(batch.brandProfit)}</p>
+                           </div>
+                        </div>
+                     </div>
+                  ))}
+               </div>
+             </div>
+          )}
+
+          {/* Products, Partners, Sales, Config views follow standard structure */}
+          {activeTab === 'inventory' && (
+            <div className="animate-in fade-in duration-500">
+               <div className="flex justify-between items-center mb-6 bg-white p-4 rounded-xl border border-zinc-200 shadow-sm">
+                  <div className="flex gap-4 items-center flex-1">
+                     <div className="relative w-64">
+                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={16} />
+                       <input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-zinc-50 border-none rounded-lg text-sm focus:ring-2 focus:ring-black/10" />
+                     </div>
+                     <select className="bg-zinc-50 border-none rounded-lg px-3 py-2 text-sm text-zinc-600 font-medium cursor-pointer" value={inventoryFilter.location} onChange={(e) => setInventoryFilter({...inventoryFilter, location: e.target.value})}>
+                        <option value="all">Local: Todos</option>
+                        <option value="internal">Local: Interno</option>
+                        <option value="consigned">Local: Consignados</option>
+                        {partners.filter(p => p.type === 'Consignado').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                     </select>
+                  </div>
+                  <button onClick={() => { setEditingProduct(null); setIsProductModalOpen(true); }} className="bg-zinc-900 hover:bg-black text-white px-5 py-2.5 rounded-lg flex items-center gap-2 shadow-lg text-sm font-bold">
+                     <Plus size={16} /> Cadastrar Modelo
+                  </button>
+               </div>
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                 {sortedAndFilteredProducts.map(product => {
+                    const totalStock = getProductTotalStock(product);
+                    const consignedTotal = Object.values(product.stockConsigned || {}).reduce((a, b) => a + Number(b), 0);
+                    return (
+                      <div key={product.id} className="bg-white rounded-xl shadow-sm border border-zinc-200 overflow-hidden group hover:border-zinc-400 transition-all">
+                        <div className="h-48 bg-zinc-100 relative">
+                           {product.imageUrl ? <img src={product.imageUrl} className="w-full h-full object-cover" /> : <div className="flex items-center justify-center h-full text-zinc-300"><ImageIcon size={40}/></div>}
+                           <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                              <span className="px-2 py-1 bg-white/90 text-zinc-900 text-[10px] font-bold uppercase rounded shadow-sm">{product.colorCode}</span>
+                           </div>
+                           {/* Restored Action Buttons */}
+                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <button onClick={() => openEditProductModal(product)} className="p-2 bg-white text-zinc-900 rounded-full hover:scale-110 transition-transform" title="Editar Produto"><Edit size={16}/></button>
+                              <button onClick={() => { setSelectedProductHistory(product); setIsHistoryModalOpen(true); }} className="p-2 bg-indigo-500 text-white rounded-full hover:scale-110 transition-transform" title="Histórico"><History size={16}/></button>
+                              <button onClick={() => handleDeleteProduct(product.id)} className="p-2 bg-red-500 text-white rounded-full hover:scale-110 transition-transform" title="Excluir"><Trash2 size={16}/></button>
+                           </div>
+                        </div>
+                        <div className="p-4">
+                           <div className="flex justify-between items-start mb-2">
+                              <div>
+                                 <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">{product.modelType}</p>
+                                 <h3 className="font-bold text-zinc-900 leading-tight">{product.name}</h3>
+                                 <p className="text-xs text-zinc-500 mt-0.5">{product.colorName || 'Cor Padrão'}</p>
+                              </div>
+                           </div>
+                           <div className="mt-3 pt-3 border-t border-zinc-100 text-xs space-y-1">
+                              <div className="flex justify-between text-zinc-600"><span>Interno:</span> <span className="font-bold">{product.stockInternal}</span></div>
+                              <div className="flex justify-between text-zinc-600"><span>Consignado:</span> <span className="font-bold">{consignedTotal}</span></div>
+                           </div>
+                        </div>
+                      </div>
+                    );
+                 })}
+               </div>
+            </div>
+          )}
+
+          {activeTab === 'sales' && (
+             <div className="animate-in fade-in duration-500">
+               <div className="flex justify-end mb-4">
+                  <button onClick={() => setIsSaleModalOpen(true)} className="bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-lg flex items-center gap-2 shadow-lg text-sm font-bold">
+                     <Plus size={16} /> Registrar Venda Unitária
+                  </button>
+               </div>
+               <div className="bg-white rounded-xl shadow-sm border border-zinc-200">
+                  <table className="w-full text-sm text-left">
+                     <thead className="bg-zinc-50 text-zinc-500 font-bold text-xs uppercase tracking-wider">
+                        <tr><th className="px-6 py-4">Data</th><th className="px-6 py-4">Descrição</th><th className="px-6 py-4 text-right">Valor</th><th className="px-6 py-4 text-right">Lucro</th></tr>
+                     </thead>
+                     <tbody className="divide-y divide-zinc-100">
+                        {sales.map(s => (
+                           <tr key={s.id} className="hover:bg-zinc-50">
+                              <td className="px-6 py-4 text-zinc-500">{formatDate(s.date)}</td>
+                              <td className="px-6 py-4">
+                                 <p className="font-bold text-zinc-800">{s.isWholesaleBatch ? s.description : s.productName}</p>
+                                 <p className="text-xs text-zinc-400 uppercase">{s.partnerName} • {s.partnerType}</p>
+                              </td>
+                              <td className="px-6 py-4 text-right font-bold">{formatCurrency(s.totalValue)}</td>
+                              <td className="px-6 py-4 text-right text-green-600">{formatCurrency(s.brandProfit)}</td>
+                           </tr>
+                        ))}
+                     </tbody>
+                  </table>
+               </div>
+             </div>
+          )}
+
+          {activeTab === 'partners' && (
+             <div className="animate-in fade-in duration-500">
+               <div className="flex justify-end mb-6">
+                  <button onClick={() => setIsPartnerModalOpen(true)} className="bg-zinc-900 hover:bg-black text-white px-5 py-2.5 rounded-lg flex items-center gap-2 text-sm font-bold"><Plus size={16} /> Novo Parceiro</button>
+               </div>
+               <div className="bg-white rounded-xl shadow-sm border border-zinc-200">
+                  <table className="w-full text-sm text-left">
+                     <thead className="bg-zinc-50 text-zinc-500 font-bold text-xs uppercase tracking-wider">
+                        <tr><th className="px-6 py-4">Nome</th><th className="px-6 py-4">Tipo</th><th className="px-6 py-4">Comissão</th><th className="px-6 py-4">Contato</th></tr>
+                     </thead>
+                     <tbody className="divide-y divide-zinc-100">
+                        {partners.map(p => (
+                           <tr key={p.id} className="hover:bg-zinc-50"><td className="px-6 py-4 font-bold">{p.name}</td><td className="px-6 py-4"><span className="px-2 py-1 bg-zinc-100 rounded text-xs border border-zinc-200">{p.type}</span></td><td className="px-6 py-4">{p.commissionRate}%</td><td className="px-6 py-4 text-zinc-500">{p.contact}</td></tr>
+                        ))}
+                     </tbody>
+                  </table>
+               </div>
+             </div>
+          )}
+
+        </div>
+      </main>
+
+      {/* --- MODALS --- */}
+
+      {/* NEW PRODUCT GROUP MODAL (Used for Create Group OR Edit Single) */}
+      <Modal isOpen={isProductModalOpen} onClose={() => setIsProductModalOpen(false)} title={editingProduct ? "Editar Produto" : "Cadastro de Modelo"}>
+         <form onSubmit={handleSaveProductGroup} className="space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+               <div><label className="text-xs font-bold text-zinc-500 uppercase">Nome do Modelo</label><input required placeholder="Ex: Aviador Clássico" className="w-full border rounded p-2 text-sm" value={productGroupForm.name} onChange={e => setProductGroupForm({...productGroupForm, name: e.target.value})} /></div>
+               <div>
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Tipo de Modelo</label>
+                  <select className="w-full border rounded p-2 text-sm" value={productGroupForm.modelType} onChange={e => setProductGroupForm({...productGroupForm, modelType: e.target.value})}>
+                     <option value="Quadrado">Quadrado</option><option value="Redondo">Redondo</option><option value="Gatinho">Gatinho</option><option value="Aviador">Aviador</option><option value="Retangular">Retangular</option><option value="Outro">Outro</option>
+                  </select>
+               </div>
+            </div>
+
+            <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+               <h4 className="text-xs font-bold text-zinc-400 uppercase mb-3">{editingProduct ? "Dados da Variação" : "Variações de Cores"}</h4>
+               <div className="space-y-3">
+                  {productGroupForm.variations.map((v, idx) => (
+                     <div key={v.id} className="flex gap-2 items-start bg-white p-2 rounded border border-zinc-200 shadow-sm">
+                        <div className="w-16"><label className="text-[10px] uppercase text-zinc-400">Cód</label><input placeholder="C1" className="w-full border rounded p-1 text-sm uppercase" value={v.colorCode} onChange={e => { const newVars = [...productGroupForm.variations]; newVars[idx].colorCode = e.target.value; setProductGroupForm({...productGroupForm, variations: newVars}); }} /></div>
+                        <div className="flex-1"><label className="text-[10px] uppercase text-zinc-400">Nome da Cor</label><input placeholder="Preto Fosco" className="w-full border rounded p-1 text-sm" value={v.colorName} onChange={e => { const newVars = [...productGroupForm.variations]; newVars[idx].colorName = e.target.value; setProductGroupForm({...productGroupForm, variations: newVars}); }} /></div>
+                        
+                        {/* Only show stock input on creation, not edit (stock managed separately or read-only ref) */}
+                        {!editingProduct && (
+                           <div className="w-20"><label className="text-[10px] uppercase text-zinc-400">Qtd</label><input type="number" className="w-full border rounded p-1 text-sm" value={v.stock} onChange={e => { const newVars = [...productGroupForm.variations]; newVars[idx].stock = e.target.value; setProductGroupForm({...productGroupForm, variations: newVars}); }} /></div>
+                        )}
+
+                        <div className="mt-4">
+                           <label className="cursor-pointer bg-zinc-100 hover:bg-zinc-200 p-1.5 rounded flex items-center justify-center">
+                              {v.imageUrl ? <img src={v.imageUrl} className="w-5 h-5 object-cover rounded" /> : <Upload size={14} />}
+                              <input type="file" accept="image/*" className="hidden" onChange={(e) => handleVariationImageUpload(e, idx)} />
+                           </label>
+                        </div>
+                        {(!editingProduct && idx > 0) && <button type="button" onClick={() => removeVariation(idx)} className="mt-4 text-red-400 hover:text-red-600"><Trash2 size={16}/></button>}
+                     </div>
+                  ))}
+                  {!editingProduct && (
+                     <button type="button" onClick={addVariation} className="text-xs font-bold text-indigo-600 flex items-center gap-1 mt-2 hover:underline"><Plus size={14}/> Adicionar Outra Cor</button>
+                  )}
+               </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-6">
+              <div>
+                  <h4 className="text-xs font-bold text-zinc-400 uppercase mb-2">Custos Unitários</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                     {/* Fix for uncontrolled input error: Correctly map keys */}
+                     {['Base', 'Case', 'Laser', 'Freight'].map(f => {
+                        const label = f === 'Freight' ? 'Frete' : f;
+                        return (
+                           <div key={f}><label className="text-[10px] uppercase text-zinc-400">{label}</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={productGroupForm[`cost${f}`]} onChange={e => setProductGroupForm({...productGroupForm, [`cost${f}`]: e.target.value})} /></div>
+                        )
+                     })}
+                     <div><label className="text-[10px] uppercase text-zinc-400">Outros</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={productGroupForm[`costOther`]} onChange={e => setProductGroupForm({...productGroupForm, [`costOther`]: e.target.value})} /></div>
+                  </div>
+              </div>
+              <div>
+                  <h4 className="text-xs font-bold text-zinc-400 uppercase mb-2">Configuração Geral</h4>
+                  <div className="space-y-2">
+                     <div><label className="text-[10px] uppercase text-zinc-400">Preço Venda</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm font-bold" value={productGroupForm.sellPrice} onChange={e => setProductGroupForm({...productGroupForm, sellPrice: e.target.value})} /></div>
+                     
+                     {!editingProduct && (
+                        <div>
+                           <label className="text-[10px] uppercase text-zinc-400">Localização Inicial</label>
+                           <select className="w-full border rounded p-1 text-sm" value={productGroupForm.initialLocation} onChange={e => setProductGroupForm({...productGroupForm, initialLocation: e.target.value})}>
+                              <option value="internal">Estoque Interno</option>
+                              {partners.filter(p => p.type === 'Consignado').map(p => <option key={p.id} value={p.id}>Consignado: {p.name}</option>)}
+                           </select>
+                        </div>
+                     )}
+                     
+                     <div className="flex items-center gap-2 pt-2"><input type="checkbox" checked={productGroupForm.onWebsite} onChange={e => setProductGroupForm({...productGroupForm, onWebsite: e.target.checked})} /><label className="text-sm">Publicar no Site</label></div>
+                  </div>
+              </div>
+            </div>
+            <button type="submit" className="w-full bg-zinc-900 text-white font-bold py-3 rounded-lg">Salvar</button>
+         </form>
+      </Modal>
+
+      {/* WHOLESALE / BATCH MODAL */}
+      <Modal isOpen={isWholesaleModalOpen} onClose={() => setIsWholesaleModalOpen(false)} title="Novo Lote Atacado / Dropshipping">
+         <form onSubmit={handleSaveWholesaleBatch} className="space-y-6">
+            <div className="flex bg-zinc-100 p-1 rounded-lg w-fit">
+               <button type="button" onClick={() => setWholesaleForm({...wholesaleForm, mode: 'dropshipping'})} className={`px-4 py-2 rounded text-sm font-bold transition-all ${wholesaleForm.mode === 'dropshipping' ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500'}`}>Dropshipping (Manual)</button>
+               <button type="button" onClick={() => setWholesaleForm({...wholesaleForm, mode: 'stock'})} className={`px-4 py-2 rounded text-sm font-bold transition-all ${wholesaleForm.mode === 'stock' ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500'}`}>Estoque Interno (Automático)</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+               <div><label className="text-xs font-bold text-zinc-500 uppercase">Descrição do Lote</label><input required placeholder="Ex: Pedido Lote João - 50 un" className="w-full border rounded p-2 text-sm" value={wholesaleForm.description} onChange={e => setWholesaleForm({...wholesaleForm, description: e.target.value})} /></div>
+               <div>
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Cliente Atacado</label>
+                  <select required className="w-full border rounded p-2 text-sm" onChange={e => setWholesaleForm({...wholesaleForm, partnerId: e.target.value})}>
+                     <option value="">Selecione...</option>
+                     {partners.filter(p => p.type === 'Atacado' || p.type === 'Franquia').map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+               </div>
+            </div>
+
+            {/* DROPSHIPPING MODE: MANUAL COSTS */}
+            {wholesaleForm.mode === 'dropshipping' && (
+               <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100 animate-in fade-in">
+                  <h4 className="text-xs font-bold text-yellow-700 uppercase mb-3">Custos Totais da Operação (Lote)</h4>
+                  <div className="grid grid-cols-3 gap-3">
+                     <div><label className="text-[10px] uppercase text-yellow-600">Total Produtos</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={wholesaleForm.totalCostProduct} onChange={e => setWholesaleForm({...wholesaleForm, totalCostProduct: e.target.value})} /></div>
+                     <div><label className="text-[10px] uppercase text-yellow-600">Total Cases</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={wholesaleForm.totalCostCase} onChange={e => setWholesaleForm({...wholesaleForm, totalCostCase: e.target.value})} /></div>
+                     <div><label className="text-[10px] uppercase text-yellow-600">Total Laser</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={wholesaleForm.totalCostLaser} onChange={e => setWholesaleForm({...wholesaleForm, totalCostLaser: e.target.value})} /></div>
+                     <div><label className="text-[10px] uppercase text-yellow-600">Total Frete</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={wholesaleForm.totalCostFreight} onChange={e => setWholesaleForm({...wholesaleForm, totalCostFreight: e.target.value})} /></div>
+                     <div><label className="text-[10px] uppercase text-yellow-600">Outros</label><input type="number" step="0.01" className="w-full border rounded p-1 text-sm" value={wholesaleForm.totalCostOther} onChange={e => setWholesaleForm({...wholesaleForm, totalCostOther: e.target.value})} /></div>
+                  </div>
+                  <div className="mt-3"><label className="text-xs font-bold text-zinc-500 uppercase">Quantidade Total de Peças</label><input required type="number" className="w-full border rounded p-2 text-sm" value={wholesaleForm.quantity} onChange={e => setWholesaleForm({...wholesaleForm, quantity: e.target.value})} /></div>
+               </div>
+            )}
+
+            {/* STOCK MODE: ITEM PICKER */}
+            {wholesaleForm.mode === 'stock' && (
+               <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-200 animate-in fade-in">
+                  <h4 className="text-xs font-bold text-zinc-600 uppercase mb-3">Montagem do Lote (Baixa de Estoque)</h4>
+                  
+                  {/* Item Adder */}
+                  <div className="flex gap-2 items-end mb-4 p-3 bg-white rounded border border-zinc-200">
+                     <div className="relative flex-1">
+                        <label className="text-[10px] uppercase text-zinc-400 font-bold mb-1 block">Buscar Óculos</label>
+                        <input type="text" placeholder="Nome ou SKU..." value={productSearchTerm} 
+                               onChange={e => { setProductSearchTerm(e.target.value); setShowProductDropdown(true); }}
+                               onFocus={() => setShowProductDropdown(true)}
+                               className="w-full border rounded p-1.5 text-sm" />
+                        {showProductDropdown && productSearchTerm && (
+                           <div className="absolute z-10 w-full bg-white border shadow-lg rounded max-h-40 overflow-y-auto mt-1 left-0">
+                              {products.filter(p => p.name.toLowerCase().includes(productSearchTerm.toLowerCase())).map(p => (
+                                 <div key={p.id} className="p-2 hover:bg-zinc-100 cursor-pointer text-sm" 
+                                      onClick={() => { setBatchItemForm({...batchItemForm, productId: p.id}); setProductSearchTerm(`${p.sku} - ${p.name}`); setShowProductDropdown(false); }}>
+                                    {p.sku} - {p.name}
+                                 </div>
+                              ))}
+                           </div>
+                        )}
+                     </div>
+
+                     <div className="flex-1">
+                        <label className="text-[10px] uppercase text-zinc-400 font-bold mb-1 block">Origem (Estoque)</label>
+                        <select className="w-full border rounded p-1.5 text-sm" value={batchItemForm.sourceId} onChange={e => setBatchItemForm({...batchItemForm, sourceId: e.target.value})}>
+                           <option value="internal">Estoque Interno ({batchItemForm.productId ? (products.find(p=>p.id===batchItemForm.productId)?.stockInternal || 0) : '-'})</option>
+                           {batchItemForm.productId && partners.filter(p => p.type === 'Consignado').map(p => {
+                              const prod = products.find(prod => prod.id === batchItemForm.productId);
+                              const qty = prod?.stockConsigned?.[p.id] || 0;
+                              return qty > 0 ? <option key={p.id} value={p.id}>{p.name} ({qty})</option> : null;
+                           })}
+                        </select>
+                     </div>
+
+                     <div className="w-20">
+                        <label className="text-[10px] uppercase text-zinc-400 font-bold mb-1 block">Qtd</label>
+                        <input type="number" min="1" className="w-full border rounded p-1.5 text-sm" value={batchItemForm.quantity} onChange={e => setBatchItemForm({...batchItemForm, quantity: e.target.value})} />
+                     </div>
+
+                     <button type="button" onClick={handleAddBatchItem} className="bg-zinc-800 text-white p-1.5 rounded h-fit hover:bg-black"><Plus size={18}/></button>
+                  </div>
+
+                  {/* Added Items List */}
+                  <div className="space-y-2 max-h-40 overflow-y-auto mb-2">
+                     {wholesaleForm.batchItems.map(item => (
+                        <div key={item.id} className="flex justify-between items-center bg-white p-2 rounded border border-zinc-200 text-sm">
+                           <div>
+                              <span className="font-bold">{item.name}</span> <span className="text-zinc-400 text-xs">({item.sku})</span>
+                              <div className="text-[10px] text-zinc-500 flex items-center gap-1"><MapPin size={10}/> Saiu de: {item.sourceName}</div>
+                           </div>
+                           <div className="flex items-center gap-4">
+                              <span className="font-mono bg-zinc-100 px-2 py-0.5 rounded">{item.quantity} un</span>
+                              <button type="button" onClick={() => handleRemoveBatchItem(item.id)} className="text-red-400 hover:text-red-600"><Trash2 size={14}/></button>
+                           </div>
+                        </div>
+                     ))}
+                     {wholesaleForm.batchItems.length === 0 && <div className="text-center text-zinc-400 text-xs py-4">Nenhum item adicionado ao lote ainda.</div>}
+                  </div>
+                  
+                  {wholesaleForm.batchItems.length > 0 && (
+                     <div className="text-right text-xs text-zinc-500 border-t border-zinc-200 pt-2">
+                        Custo Automático Calculado: <strong>{formatCurrency(wholesaleForm.batchItems.reduce((acc, i) => acc + (i.unitCost * i.quantity), 0))}</strong>
+                     </div>
+                  )}
+               </div>
+            )}
+
+            <div><label className="text-xs font-bold text-zinc-500 uppercase">Valor Venda Total (Lote)</label><input required type="number" step="0.01" className="w-full border rounded p-2 text-lg font-bold text-green-700" value={wholesaleForm.totalSaleValue} onChange={e => setWholesaleForm({...wholesaleForm, totalSaleValue: e.target.value})} /></div>
+
+            <button type="submit" className="w-full bg-green-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2"><CheckCircle2 size={18}/> Confirmar Venda de Lote</button>
+         </form>
+      </Modal>
+
+      {/* Sale Modal */}
+      <Modal isOpen={isSaleModalOpen} onClose={() => setIsSaleModalOpen(false)} title="Nova Venda (Baixa de Estoque)">
+         <form onSubmit={handleSaveSale} className="space-y-4">
+            <div className="flex gap-4">
+               <div className="flex-1"><label className="text-xs font-bold text-zinc-500 uppercase">Data</label><input type="date" className="w-full border rounded p-2 text-sm" value={saleForm.date} onChange={e => setSaleForm({...saleForm, date: e.target.value})} /></div>
+               <div className="flex-1 pt-6"><label className="flex items-center gap-2 text-xs font-bold uppercase cursor-pointer"><input type="checkbox" checked={saleForm.isGift} onChange={e => setSaleForm({...saleForm, isGift: e.target.checked})} /> É Brinde/Mkt?</label></div>
+            </div>
+            <div>
+               <label className="text-xs font-bold text-zinc-500 uppercase">Quem Vendeu? (Parceiro)</label>
+               <select className="w-full border rounded p-2 text-sm" onChange={e => setSaleForm({...saleForm, partnerId: e.target.value})}>
+                  <option value="">Selecione...</option>
+                  {partners.map(p => <option key={p.id} value={p.id}>{p.name} ({p.type})</option>)}
+               </select>
+            </div>
+            <div>
+               <label className="text-xs font-bold text-zinc-500 uppercase">Produto</label>
+               <select className="w-full border rounded p-2 text-sm" onChange={e => setSaleForm({...saleForm, productId: e.target.value})}>
+                  <option value="">Selecione...</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.sku} - {p.name}</option>)}
+               </select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+               <div><label className="text-xs font-bold text-zinc-500 uppercase">Qtd</label><input type="number" className="w-full border rounded p-2 text-sm" value={saleForm.quantity} onChange={e => setSaleForm({...saleForm, quantity: e.target.value})} /></div>
+               {!saleForm.isGift && <div><label className="text-xs font-bold text-zinc-500 uppercase">Desconto (R$)</label><input type="number" className="w-full border rounded p-2 text-sm" value={saleForm.discount} onChange={e => setSaleForm({...saleForm, discount: e.target.value})} /></div>}
+            </div>
+            <button type="submit" className="w-full bg-green-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2"><CheckCircle2 size={18}/> Confirmar Venda</button>
+         </form>
+      </Modal>
+      
+      <Modal isOpen={isTransferModalOpen} onClose={() => setIsTransferModalOpen(false)} title="Transferência / Consignação">
+         <form onSubmit={handleTransfer} className="space-y-4">
+            <p className="text-xs text-zinc-500 mb-4">Mover do Estoque Interno para um Parceiro Consignado (não gera venda).</p>
+            <div>
+               <label className="text-xs font-bold text-zinc-500 uppercase">Produto (Interno)</label>
+               <select className="w-full border rounded p-2 text-sm" onChange={e => setTransferForm({...transferForm, productId: e.target.value})}>
+                  <option value="">Selecione...</option>
+                  {products.filter(p => p.stockInternal > 0).map(p => (
+                     <option key={p.id} value={p.id}>{p.sku} - {p.name} (Disp: {p.stockInternal})</option>
+                  ))}
+               </select>
+            </div>
+            <div>
+               <label className="text-xs font-bold text-zinc-500 uppercase">Enviar para</label>
+               <select className="w-full border rounded p-2 text-sm" onChange={e => setTransferForm({...transferForm, toPartnerId: e.target.value})}>
+                  <option value="">Selecione Parceiro...</option>
+                  {partners.filter(p => p.type === 'Consignado').map(p => (
+                     <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+               </select>
+            </div>
+            <div><label className="text-xs font-bold text-zinc-500 uppercase">Quantidade</label><input type="number" className="w-full border rounded p-2 text-sm" value={transferForm.quantity} onChange={e => setTransferForm({...transferForm, quantity: e.target.value})} /></div>
+            <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2"><ArrowRightLeft size={16}/> Confirmar Transferência</button>
+         </form>
+      </Modal>
+
+      <Modal isOpen={isPartnerModalOpen} onClose={() => setIsPartnerModalOpen(false)} title="Novo Parceiro">
+        <form onSubmit={async (e) => {
+           e.preventDefault();
+           if(!user) return;
+           await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'partners'), partnerForm);
+           setIsPartnerModalOpen(false);
+        }} className="space-y-4">
+          <div><label className="text-xs font-bold text-zinc-500 uppercase">Nome</label><input required className="w-full border rounded p-2 text-sm" value={partnerForm.name} onChange={e => setPartnerForm({...partnerForm, name: e.target.value})} /></div>
+          <div className="grid grid-cols-2 gap-4">
+             <div><label className="text-xs font-bold text-zinc-500 uppercase">Tipo</label><select className="w-full border rounded p-2 text-sm" value={partnerForm.type} onChange={e => setPartnerForm({...partnerForm, type: e.target.value})}><option value="Consignado">Consignado</option><option value="Atacado">Atacado</option><option value="Franquia">Micro Franquia</option><option value="Influenciador">Influenciador</option></select></div>
+             <div><label className="text-xs font-bold text-zinc-500 uppercase">Comissão (%)</label><input type="number" className="w-full border rounded p-2 text-sm" value={partnerForm.commissionRate} onChange={e => setPartnerForm({...partnerForm, commissionRate: e.target.value})} /></div>
+          </div>
+          <div><label className="text-xs font-bold text-zinc-500 uppercase">Contato</label><input className="w-full border rounded p-2 text-sm" value={partnerForm.contact} onChange={e => setPartnerForm({...partnerForm, contact: e.target.value})} /></div>
+          <button type="submit" className="w-full bg-zinc-900 text-white font-bold py-3 rounded-lg">Salvar</button>
+        </form>
+      </Modal>
+
+    </div>
+  );
+}
